@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>文件浏览器 - Flask NAS</title>
+    
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    
+    <!-- Bootstrap Icons -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
+    
+    <style>
+        body {
+            background-color: #f8f9fa;
+        }
+        
+        .navbar {
+            box-shadow: 0 2px 4px rgba(0,0,0,.1);
+        }
+        
+        .breadcrumb {
+            background-color: white;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,.1);
+        }
+        
+        .operations-panel {
+            background-color: white;
+            padding: 1.5rem;
+            border-radius: 0.5rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,.1);
+            margin-top: 1rem;
+        }
+        
+        .file-table {
+            background-color: white;
+            border-radius: 0.5rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,.1);
+            overflow: hidden;
+        }
+        
+        .file-table table {
+            margin-bottom: 0;
+        }
+        
+        .file-icon {
+            font-size: 1.5rem;
+            margin-right: 0.5rem;
+        }
+        
+        .file-name {
+            display: flex;
+            align-items: center;
+        }
+        
+        .file-name a {
+            text-decoration: none;
+            color: #212529;
+        }
+        
+        .file-name a:hover {
+            color: #0d6efd;
+            text-decoration: underline;
+        }
+        
+        .btn-delete {
+            padding: 0.25rem 0.5rem;
+            font-size: 0.875rem;
+        }
+        
+        .empty-folder {
+            text-align: center;
+            padding: 3rem;
+            color: #6c757d;
+        }
+        
+        .empty-folder i {
+            font-size: 4rem;
+            margin-bottom: 1rem;
+        }
+        
+        @media (max-width: 768px) {
+            .operations-panel {
+                padding: 1rem;
+            }
+            
+            .btn-group-mobile {
+                display: flex;
+                flex-direction: column;
+                gap: 0.5rem;
+            }
+            
+            .btn-group-mobile .btn {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- 导航栏 -->
+    <nav class="navbar navbar-dark bg-primary">
+        <div class="container-fluid">
+            <span class="navbar-brand mb-0 h1">
+                <i class="bi bi-hdd-network"></i> Flask NAS 文件浏览器
+            </span>
+        </div>
+    </nav>
+
+    <!-- 主容器 -->
+    <div class="container-fluid mt-4">
+        <!-- Flash 消息 -->
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+                        {{ message }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <!-- 面包屑导航 -->
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb">
+                {% for crumb in breadcrumbs %}
+                    {% if loop.last %}
+                        <li class="breadcrumb-item active" aria-current="page">
+                            <i class="bi bi-folder"></i> {{ crumb.name }}
+                        </li>
+                    {% else %}
+                        <li class="breadcrumb-item">
+                            <a href="{{ url_for('browse', subpath=crumb.path) }}">
+                                {% if loop.first %}
+                                    <i class="bi bi-house-door"></i>
+                                {% endif %}
+                                {{ crumb.name }}
+                            </a>
+                        </li>
+                    {% endif %}
+                {% endfor %}
+            </ol>
+        </nav>
+
+        <!-- 操作面板 -->
+        <div class="operations-panel">
+            <div class="row g-3">
+                <!-- 上传文件 -->
+                <div class="col-md-6">
+                    <form action="{{ url_for('upload', subpath=current_path) }}" method="post" enctype="multipart/form-data" id="uploadForm">
+                        <div class="input-group">
+                            <input type="file" class="form-control" id="fileInput" name="files" multiple required>
+                            <button class="btn btn-primary" type="submit">
+                                <i class="bi bi-upload"></i> 上传文件
+                            </button>
+                        </div>
+                        <small class="text-muted">支持同时选择多个文件</small>
+                    </form>
+                </div>
+
+                <!-- 创建文件夹 -->
+                <div class="col-md-6">
+                    <form action="{{ url_for('create_folder', subpath=current_path) }}" method="post" id="createFolderForm">
+                        <div class="input-group">
+                            <input type="text" class="form-control" id="folderNameInput" name="folder_name" placeholder="输入文件夹名称" required>
+                            <button class="btn btn-success" type="submit">
+                                <i class="bi bi-folder-plus"></i> 创建文件夹
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <!-- 文件列表 -->
+        <div class="file-table mt-4">
+            {% if folders or files %}
+                <table class="table table-hover">
+                    <thead class="table-light">
+                        <tr>
+                            <th style="width: 50%;">名称</th>
+                            <th style="width: 15%;">大小</th>
+                            <th style="width: 20%;">修改时间</th>
+                            <th style="width: 15%;" class="text-end">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <!-- 文件夹列表 -->
+                        {% for folder in folders %}
+                            <tr>
+                                <td>
+                                    <div class="file-name">
+                                        <i class="bi bi-folder-fill file-icon text-warning"></i>
+                                        <a href="{{ url_for('browse', subpath=(current_path + '/' + folder.name) if current_path else folder.name) }}">
+                                            {{ folder.name }}
+                                        </a>
+                                    </div>
+                                </td>
+                                <td class="text-muted">—</td>
+                                <td class="text-muted">{{ folder.modified }}</td>
+                                <td class="text-end">
+                                    <button class="btn btn-danger btn-delete btn-sm" onclick="confirmDelete('{{ (current_path + '/' + folder.name) if current_path else folder.name }}', '{{ folder.name }}', true)">
+                                        <i class="bi bi-trash"></i> 删除
+                                    </button>
+                                </td>
+                            </tr>
+                        {% endfor %}
+
+                        <!-- 文件列表 -->
+                        {% for file in files %}
+                            <tr>
+                                <td>
+                                    <div class="file-name">
+                                        {% if file.type == 'image' %}
+                                            <i class="bi bi-file-image file-icon text-info"></i>
+                                        {% elif file.type == 'video' %}
+                                            <i class="bi bi-file-play file-icon text-danger"></i>
+                                        {% elif file.type == 'audio' %}
+                                            <i class="bi bi-file-music file-icon text-primary"></i>
+                                        {% elif file.type == 'document' %}
+                                            <i class="bi bi-file-text file-icon text-success"></i>
+                                        {% elif file.type == 'archive' %}
+                                            <i class="bi bi-file-zip file-icon text-warning"></i>
+                                        {% elif file.type == 'code' %}
+                                            <i class="bi bi-file-code file-icon text-dark"></i>
+                                        {% else %}
+                                            <i class="bi bi-file-earmark file-icon text-secondary"></i>
+                                        {% endif %}
+                                        <a href="{{ url_for('download', filepath=(current_path + '/' + file.name) if current_path else file.name) }}">
+                                            {{ file.name }}
+                                        </a>
+                                    </div>
+                                </td>
+                                <td class="text-muted">{{ file.size_formatted }}</td>
+                                <td class="text-muted">{{ file.modified }}</td>
+                                <td class="text-end">
+                                    <button class="btn btn-danger btn-delete btn-sm" onclick="confirmDelete('{{ (current_path + '/' + file.name) if current_path else file.name }}', '{{ file.name }}', false)">
+                                        <i class="bi bi-trash"></i> 删除
+                                    </button>
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            {% else %}
+                <div class="empty-folder">
+                    <i class="bi bi-inbox"></i>
+                    <h5>此文件夹为空</h5>
+                    <p class="text-muted">您可以上传文件或创建新文件夹</p>
+                </div>
+            {% endif %}
+        </div>
+
+        <!-- 页脚 -->
+        <footer class="mt-5 mb-3 text-center text-muted">
+            <small>
+                <i class="bi bi-exclamation-triangle"></i> 
+                警告：此应用不包含认证机制，仅限内网使用！
+            </small>
+        </footer>
+    </div>
+
+    <!-- 删除表单（隐藏） -->
+    <form id="deleteForm" method="post" style="display: none;">
+    </form>
+
+    <!-- Bootstrap 5 JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+
+    <script>
+        // 删除确认
+        function confirmDelete(filepath, name, isFolder) {
+            const type = isFolder ? '文件夹' : '文件';
+            const message = `确定要删除${type} "${name}" 吗？${isFolder ? '\n\n警告：此操作将删除文件夹及其所有内容！' : ''}`;
+            
+            if (confirm(message)) {
+                const form = document.getElementById('deleteForm');
+                form.action = '/delete/' + filepath;
+                form.submit();
+            }
+        }
+
+        // 文件上传验证
+        document.getElementById('uploadForm').addEventListener('submit', function(e) {
+            const fileInput = document.getElementById('fileInput');
+            if (!fileInput.files || fileInput.files.length === 0) {
+                e.preventDefault();
+                alert('请选择要上传的文件');
+                return false;
+            }
+        });
+
+        // 创建文件夹验证
+        document.getElementById('createFolderForm').addEventListener('submit', function(e) {
+            const folderName = document.getElementById('folderNameInput').value.trim();
+            if (!folderName) {
+                e.preventDefault();
+                alert('请输入文件夹名称');
+                return false;
+            }
+        });
+
+        // 自动关闭提示消息
+        setTimeout(function() {
+            const alerts = document.querySelectorAll('.alert');
+            alerts.forEach(function(alert) {
+                const bsAlert = new bootstrap.Alert(alert);
+                bsAlert.close();
+            });
+        }, 5000);
+    </script>
+</body>
+</html>
+
