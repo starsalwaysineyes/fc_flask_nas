@@ -153,11 +153,20 @@
                     <form action="{{ url_for('upload', subpath=current_path) }}" method="post" enctype="multipart/form-data" id="uploadForm">
                         <div class="input-group">
                             <input type="file" class="form-control" id="fileInput" name="files" multiple required>
-                            <button class="btn btn-primary" type="submit">
+                            <button class="btn btn-primary" type="submit" id="uploadBtn">
                                 <i class="bi bi-upload"></i> 上传文件
                             </button>
                         </div>
-                        <small class="text-muted">支持同时选择多个文件</small>
+                        <small class="text-muted">支持同时选择多个文件，支持中文文件名</small>
+                        
+                        <!-- 上传进度条 -->
+                        <div id="uploadProgress" class="mt-2" style="display: none;">
+                            <div class="progress">
+                                <div class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" 
+                                     id="uploadProgressBar" style="width: 0%">0%</div>
+                            </div>
+                            <small class="text-muted" id="uploadStatus">正在上传...</small>
+                        </div>
                     </form>
                 </div>
 
@@ -283,15 +292,94 @@
             }
         }
 
-        // 文件上传验证
+        // 文件上传（带进度）
         document.getElementById('uploadForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            
             const fileInput = document.getElementById('fileInput');
+            const uploadBtn = document.getElementById('uploadBtn');
+            const uploadProgress = document.getElementById('uploadProgress');
+            const uploadProgressBar = document.getElementById('uploadProgressBar');
+            const uploadStatus = document.getElementById('uploadStatus');
+            
             if (!fileInput.files || fileInput.files.length === 0) {
-                e.preventDefault();
                 alert('请选择要上传的文件');
                 return false;
             }
+            
+            // 准备表单数据
+            const formData = new FormData();
+            const files = fileInput.files;
+            
+            for (let i = 0; i < files.length; i++) {
+                formData.append('files', files[i]);
+            }
+            
+            // 显示进度条
+            uploadProgress.style.display = 'block';
+            uploadBtn.disabled = true;
+            fileInput.disabled = true;
+            
+            // 创建 XMLHttpRequest
+            const xhr = new XMLHttpRequest();
+            
+            // 监听上传进度
+            xhr.upload.addEventListener('progress', function(e) {
+                if (e.lengthComputable) {
+                    const percentComplete = Math.round((e.loaded / e.total) * 100);
+                    uploadProgressBar.style.width = percentComplete + '%';
+                    uploadProgressBar.textContent = percentComplete + '%';
+                    
+                    if (percentComplete < 100) {
+                        uploadStatus.textContent = `正在上传... ${percentComplete}% (${formatBytes(e.loaded)} / ${formatBytes(e.total)})`;
+                    } else {
+                        uploadStatus.textContent = '正在处理...';
+                    }
+                }
+            });
+            
+            // 监听上传完成
+            xhr.addEventListener('load', function() {
+                if (xhr.status === 200) {
+                    uploadProgressBar.classList.remove('progress-bar-animated');
+                    uploadProgressBar.classList.add('bg-success');
+                    uploadStatus.textContent = '上传完成！';
+                    
+                    // 延迟后刷新页面
+                    setTimeout(function() {
+                        window.location.reload();
+                    }, 500);
+                } else {
+                    uploadProgressBar.classList.remove('progress-bar-animated');
+                    uploadProgressBar.classList.add('bg-danger');
+                    uploadStatus.textContent = '上传失败！';
+                    uploadBtn.disabled = false;
+                    fileInput.disabled = false;
+                }
+            });
+            
+            // 监听上传错误
+            xhr.addEventListener('error', function() {
+                uploadProgressBar.classList.remove('progress-bar-animated');
+                uploadProgressBar.classList.add('bg-danger');
+                uploadStatus.textContent = '上传失败！';
+                uploadBtn.disabled = false;
+                fileInput.disabled = false;
+            });
+            
+            // 发送请求
+            xhr.open('POST', this.action);
+            xhr.send(formData);
         });
+        
+        // 格式化字节数
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+        }
 
         // 创建文件夹验证
         document.getElementById('createFolderForm').addEventListener('submit', function(e) {

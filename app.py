@@ -5,15 +5,17 @@ Flask Web 文件浏览器
 用于在阿里云函数计算 FC 中管理 NAS 文件系统
 警告：此应用不包含认证机制，仅限内网使用！
 """
+# 阿里云fc层搭建环境，勿删
 import sys
 sys.path.append('/opt/python')
 # import {PackageFromLayer}
 import os
 import shutil
+import re
 from datetime import datetime
 from pathlib import Path
 from flask import Flask, render_template, request, redirect, url_for, send_file, flash, jsonify, abort
-from werkzeug.utils import secure_filename
+from werkzeug.utils import secure_filename as werkzeug_secure_filename
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
@@ -25,6 +27,34 @@ BASE_DIR = os.path.abspath(BASE_DIR)
 # 如果 BASE_DIR 不存在，创建它（开发环境）
 if not os.path.exists(BASE_DIR):
     os.makedirs(BASE_DIR, exist_ok=True)
+
+
+def secure_filename(filename):
+    """
+    自定义文件名安全处理，支持中文字符
+    
+    Args:
+        filename: 原始文件名
+    
+    Returns:
+        安全的文件名
+    """
+    # 移除路径分隔符和其他危险字符，但保留中文、字母、数字、点、下划线、连字符
+    filename = re.sub(r'[/\\:*?"<>|]', '', filename)
+    
+    # 移除开头的点（防止隐藏文件）
+    filename = filename.lstrip('.')
+    
+    # 如果文件名为空或只有空格，使用默认名称
+    if not filename or filename.isspace():
+        return 'unnamed_file'
+    
+    # 限制文件名长度（防止过长的文件名）
+    if len(filename) > 255:
+        name, ext = os.path.splitext(filename)
+        filename = name[:255-len(ext)] + ext
+    
+    return filename.strip()
 
 
 def safe_join(base, *paths):
