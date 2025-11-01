@@ -5,7 +5,9 @@ Flask Web 文件浏览器
 用于在阿里云函数计算 FC 中管理 NAS 文件系统
 警告：此应用不包含认证机制，仅限内网使用！
 """
-
+import sys
+sys.path.append('/opt/python')
+# import {PackageFromLayer}
 import os
 import shutil
 from datetime import datetime
