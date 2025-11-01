@@ -12,6 +12,9 @@ sys.path.append('/opt/python')
 import os
 import shutil
 import re
+import hashlib
+import json
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from flask import Flask, render_template, request, redirect, url_for, send_file, flash, jsonify, abort
@@ -27,6 +30,11 @@ BASE_DIR = os.path.abspath(BASE_DIR)
 # 如果 BASE_DIR 不存在，创建它（开发环境）
 if not os.path.exists(BASE_DIR):
     os.makedirs(BASE_DIR, exist_ok=True)
+
+# 临时文件夹，用于存储分片上传的临时数据
+UPLOAD_TEMP_DIR = os.path.join(tempfile.gettempdir(), 'flask_nas_uploads')
+if not os.path.exists(UPLOAD_TEMP_DIR):
+    os.makedirs(UPLOAD_TEMP_DIR, exist_ok=True)
 
 
 def secure_filename(filename):
@@ -456,6 +464,147 @@ def delete(filepath):
     except Exception as e:
         flash(f'删除失败：{str(e)}', 'danger')
         return redirect(request.referrer or url_for('browse', subpath=''))
+
+
+@app.route('/upload-chunk/', defaults={'subpath': ''}, methods=['POST'])
+@app.route('/upload-chunk/<path:subpath>', methods=['POST'])
+def upload_chunk(subpath):
+    """
+    分片上传处理
+    
+    Args:
+        subpath: 目标子路径
+    """
+    try:
+        # 获取安全路径
+        target_path = safe_join(BASE_DIR, subpath)
+        
+        if not os.path.exists(target_path) or not os.path.isdir(target_path):
+            return jsonify({'success': False, 'error': '目标目录不存在'}), 400
+        
+        # 获取分片信息
+        chunk = request.files.get('chunk')
+        filename = request.form.get('filename')
+        chunk_index = int(request.form.get('chunkIndex', 0))
+        total_chunks = int(request.form.get('totalChunks', 1))
+        file_hash = request.form.get('fileHash', '')
+        
+        if not chunk or not filename:
+            return jsonify({'success': False, 'error': '缺少必要参数'}), 400
+        
+        # 安全处理文件名
+        safe_name = secure_filename(filename)
+        if not safe_name:
+            return jsonify({'success': False, 'error': '文件名无效'}), 400
+        
+        # 创建临时目录（使用文件哈希作为标识）
+        temp_dir = os.path.join(UPLOAD_TEMP_DIR, file_hash)
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        # 保存当前分片
+        chunk_path = os.path.join(temp_dir, f'chunk_{chunk_index}')
+        chunk.save(chunk_path)
+        
+        # 保存元数据
+        meta_path = os.path.join(temp_dir, 'meta.json')
+        if os.path.exists(meta_path):
+            with open(meta_path, 'r', encoding='utf-8') as f:
+                meta = json.load(f)
+        else:
+            meta = {
+                'filename': safe_name,
+                'total_chunks': total_chunks,
+                'uploaded_chunks': [],
+                'target_path': target_path
+            }
+        
+        if chunk_index not in meta['uploaded_chunks']:
+            meta['uploaded_chunks'].append(chunk_index)
+        
+        with open(meta_path, 'w', encoding='utf-8') as f:
+            json.dump(meta, f, ensure_ascii=False)
+        
+        # 检查是否所有分片都已上传
+        if len(meta['uploaded_chunks']) == total_chunks:
+            # 合并分片
+            final_path = os.path.join(target_path, safe_name)
+            
+            # 如果文件已存在，添加数字后缀
+            if os.path.exists(final_path):
+                base, ext = os.path.splitext(safe_name)
+                counter = 1
+                while os.path.exists(final_path):
+                    new_name = f"{base}_{counter}{ext}"
+                    final_path = os.path.join(target_path, new_name)
+                    counter += 1
+            
+            # 合并所有分片
+            with open(final_path, 'wb') as final_file:
+                for i in range(total_chunks):
+                    chunk_file = os.path.join(temp_dir, f'chunk_{i}')
+                    if os.path.exists(chunk_file):
+                        with open(chunk_file, 'rb') as cf:
+                            final_file.write(cf.read())
+            
+            # 清理临时文件
+            try:
+                shutil.rmtree(temp_dir)
+            except:
+                pass
+            
+            return jsonify({
+                'success': True,
+                'completed': True,
+                'message': '文件上传完成'
+            })
+        
+        return jsonify({
+            'success': True,
+            'completed': False,
+            'uploaded': len(meta['uploaded_chunks']),
+            'total': total_chunks
+        })
+    
+    except Exception as e:
+        print(f"[ERROR] Chunk upload failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/check-upload-status/', methods=['POST'])
+def check_upload_status():
+    """
+    检查上传状态（用于断点续传）
+    """
+    try:
+        file_hash = request.json.get('fileHash')
+        
+        if not file_hash:
+            return jsonify({'success': False, 'error': '缺少文件哈希'}), 400
+        
+        temp_dir = os.path.join(UPLOAD_TEMP_DIR, file_hash)
+        meta_path = os.path.join(temp_dir, 'meta.json')
+        
+        if not os.path.exists(meta_path):
+            return jsonify({
+                'success': True,
+                'exists': False,
+                'uploaded_chunks': []
+            })
+        
+        with open(meta_path, 'r', encoding='utf-8') as f:
+            meta = json.load(f)
+        
+        return jsonify({
+            'success': True,
+            'exists': True,
+            'uploaded_chunks': meta['uploaded_chunks'],
+            'total_chunks': meta['total_chunks']
+        })
+    
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @app.errorhandler(404)

@@ -276,8 +276,53 @@
     <form id="deleteForm" method="post" style="display: none;">
     </form>
 
+    <!-- 上传方式选择模态框 -->
+    <div class="modal fade" id="uploadMethodModal" tabindex="-1" aria-labelledby="uploadMethodModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="uploadMethodModalLabel">选择上传方式</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="text-muted">检测到大文件（>10MB），请选择上传方式：</p>
+                    <div class="list-group">
+                        <button type="button" class="list-group-item list-group-item-action" onclick="selectUploadMethod('direct')">
+                            <div class="d-flex w-100 justify-content-between">
+                                <h5 class="mb-1"><i class="bi bi-upload"></i> 直接上传</h5>
+                                <span class="badge bg-primary rounded-pill">快速</span>
+                            </div>
+                            <p class="mb-1">适合网络稳定的场景，一次性上传完成</p>
+                            <small class="text-muted">推荐文件 &lt; 100MB</small>
+                        </button>
+                        
+                        <button type="button" class="list-group-item list-group-item-action mt-2" onclick="selectUploadMethod('chunk')">
+                            <div class="d-flex w-100 justify-content-between">
+                                <h5 class="mb-1"><i class="bi bi-grid-3x3"></i> 分片上传</h5>
+                                <span class="badge bg-success rounded-pill">稳定</span>
+                            </div>
+                            <p class="mb-1">将文件分成小块上传，降低单次上传压力</p>
+                            <small class="text-muted">推荐文件 &gt; 100MB</small>
+                        </button>
+                        
+                        <button type="button" class="list-group-item list-group-item-action mt-2" onclick="selectUploadMethod('resumable')">
+                            <div class="d-flex w-100 justify-content-between">
+                                <h5 class="mb-1"><i class="bi bi-arrow-clockwise"></i> 断点续传</h5>
+                                <span class="badge bg-warning rounded-pill">可恢复</span>
+                            </div>
+                            <p class="mb-1">支持暂停和继续，网络中断后可从断点恢复</p>
+                            <small class="text-muted">推荐网络不稳定或超大文件</small>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Bootstrap 5 JS -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- SparkMD5 用于计算文件哈希 -->
+    <script src="https://cdn.jsdelivr.net/npm/spark-md5@3.0.2/spark-md5.min.js"></script>
 
     <script>
         // 删除确认
@@ -292,38 +337,87 @@
             }
         }
 
-        // 文件上传（带进度）
+        // 全局变量
+        let currentFiles = null;
+        let currentUploadMethod = null;
+        let uploadMethodModal = null;
+        const CHUNK_SIZE = 2 * 1024 * 1024; // 2MB per chunk
+        const LARGE_FILE_SIZE = 10 * 1024 * 1024; // 10MB threshold
+        
+        // 初始化模态框
+        document.addEventListener('DOMContentLoaded', function() {
+            uploadMethodModal = new bootstrap.Modal(document.getElementById('uploadMethodModal'));
+        });
+        
+        // 文件上传处理
         document.getElementById('uploadForm').addEventListener('submit', function(e) {
             e.preventDefault();
             
             const fileInput = document.getElementById('fileInput');
-            const uploadBtn = document.getElementById('uploadBtn');
-            const uploadProgress = document.getElementById('uploadProgress');
-            const uploadProgressBar = document.getElementById('uploadProgressBar');
-            const uploadStatus = document.getElementById('uploadStatus');
             
             if (!fileInput.files || fileInput.files.length === 0) {
                 alert('请选择要上传的文件');
                 return false;
             }
             
-            // 准备表单数据
-            const formData = new FormData();
-            const files = fileInput.files;
+            currentFiles = fileInput.files;
             
-            for (let i = 0; i < files.length; i++) {
-                formData.append('files', files[i]);
+            // 检查是否有大文件
+            let hasLargeFile = false;
+            for (let i = 0; i < currentFiles.length; i++) {
+                if (currentFiles[i].size > LARGE_FILE_SIZE) {
+                    hasLargeFile = true;
+                    break;
+                }
             }
             
-            // 显示进度条
+            if (hasLargeFile) {
+                // 显示选择上传方式的模态框
+                uploadMethodModal.show();
+            } else {
+                // 直接上传小文件
+                startUpload('direct');
+            }
+        });
+        
+        // 选择上传方式
+        function selectUploadMethod(method) {
+            currentUploadMethod = method;
+            uploadMethodModal.hide();
+            startUpload(method);
+        }
+        
+        // 开始上传
+        function startUpload(method) {
+            const uploadBtn = document.getElementById('uploadBtn');
+            const fileInput = document.getElementById('fileInput');
+            const uploadProgress = document.getElementById('uploadProgress');
+            
             uploadProgress.style.display = 'block';
             uploadBtn.disabled = true;
             fileInput.disabled = true;
             
-            // 创建 XMLHttpRequest
+            if (method === 'direct') {
+                directUpload();
+            } else if (method === 'chunk') {
+                chunkUpload();
+            } else if (method === 'resumable') {
+                resumableUpload();
+            }
+        }
+        
+        // 直接上传
+        function directUpload() {
+            const formData = new FormData();
+            const uploadProgressBar = document.getElementById('uploadProgressBar');
+            const uploadStatus = document.getElementById('uploadStatus');
+            
+            for (let i = 0; i < currentFiles.length; i++) {
+                formData.append('files', currentFiles[i]);
+            }
+            
             const xhr = new XMLHttpRequest();
             
-            // 监听上传进度
             xhr.upload.addEventListener('progress', function(e) {
                 if (e.lengthComputable) {
                     const percentComplete = Math.round((e.loaded / e.total) * 100);
@@ -338,39 +432,198 @@
                 }
             });
             
-            // 监听上传完成
             xhr.addEventListener('load', function() {
                 if (xhr.status === 200) {
                     uploadProgressBar.classList.remove('progress-bar-animated');
                     uploadProgressBar.classList.add('bg-success');
                     uploadStatus.textContent = '上传完成！';
-                    
-                    // 延迟后刷新页面
-                    setTimeout(function() {
-                        window.location.reload();
-                    }, 500);
+                    setTimeout(() => window.location.reload(), 500);
                 } else {
-                    uploadProgressBar.classList.remove('progress-bar-animated');
-                    uploadProgressBar.classList.add('bg-danger');
-                    uploadStatus.textContent = '上传失败！';
-                    uploadBtn.disabled = false;
-                    fileInput.disabled = false;
+                    uploadFailed('上传失败！');
                 }
             });
             
-            // 监听上传错误
-            xhr.addEventListener('error', function() {
-                uploadProgressBar.classList.remove('progress-bar-animated');
-                uploadProgressBar.classList.add('bg-danger');
-                uploadStatus.textContent = '上传失败！';
-                uploadBtn.disabled = false;
-                fileInput.disabled = false;
-            });
+            xhr.addEventListener('error', () => uploadFailed('上传失败！'));
             
-            // 发送请求
-            xhr.open('POST', this.action);
+            const form = document.getElementById('uploadForm');
+            xhr.open('POST', form.action);
             xhr.send(formData);
-        });
+        }
+        
+        // 计算文件哈希
+        async function calculateFileHash(file) {
+            return new Promise((resolve, reject) => {
+                const blobSlice = File.prototype.slice || File.prototype.mozSlice || File.prototype.webkitSlice;
+                const chunkSize = 2097152; // 2MB
+                const chunks = Math.ceil(file.size / chunkSize);
+                let currentChunk = 0;
+                const spark = new SparkMD5.ArrayBuffer();
+                const fileReader = new FileReader();
+                
+                fileReader.onload = function(e) {
+                    spark.append(e.target.result);
+                    currentChunk++;
+                    
+                    if (currentChunk < chunks) {
+                        loadNext();
+                    } else {
+                        resolve(spark.end());
+                    }
+                };
+                
+                fileReader.onerror = function() {
+                    reject('计算文件哈希失败');
+                };
+                
+                function loadNext() {
+                    const start = currentChunk * chunkSize;
+                    const end = Math.min(start + chunkSize, file.size);
+                    fileReader.readAsArrayBuffer(blobSlice.call(file, start, end));
+                }
+                
+                loadNext();
+            });
+        }
+        
+        // 分片上传
+        async function chunkUpload() {
+            const uploadProgressBar = document.getElementById('uploadProgressBar');
+            const uploadStatus = document.getElementById('uploadStatus');
+            const form = document.getElementById('uploadForm');
+            
+            try {
+                for (let fileIndex = 0; fileIndex < currentFiles.length; fileIndex++) {
+                    const file = currentFiles[fileIndex];
+                    
+                    uploadStatus.textContent = `正在计算文件哈希... (${fileIndex + 1}/${currentFiles.length})`;
+                    const fileHash = await calculateFileHash(file);
+                    
+                    const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+                    let uploadedChunks = 0;
+                    
+                    for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+                        const start = chunkIndex * CHUNK_SIZE;
+                        const end = Math.min(start + CHUNK_SIZE, file.size);
+                        const chunk = file.slice(start, end);
+                        
+                        const formData = new FormData();
+                        formData.append('chunk', chunk);
+                        formData.append('filename', file.name);
+                        formData.append('chunkIndex', chunkIndex);
+                        formData.append('totalChunks', totalChunks);
+                        formData.append('fileHash', fileHash);
+                        
+                        const response = await fetch(form.action.replace('/upload/', '/upload-chunk/'), {
+                            method: 'POST',
+                            body: formData
+                        });
+                        
+                        if (!response.ok) {
+                            throw new Error('分片上传失败');
+                        }
+                        
+                        uploadedChunks++;
+                        const percentComplete = Math.round((uploadedChunks / totalChunks) * 100);
+                        uploadProgressBar.style.width = percentComplete + '%';
+                        uploadProgressBar.textContent = percentComplete + '%';
+                        uploadStatus.textContent = `正在上传... ${percentComplete}% (分片 ${uploadedChunks}/${totalChunks})`;
+                    }
+                }
+                
+                uploadProgressBar.classList.remove('progress-bar-animated');
+                uploadProgressBar.classList.add('bg-success');
+                uploadStatus.textContent = '上传完成！';
+                setTimeout(() => window.location.reload(), 500);
+            } catch (error) {
+                uploadFailed('分片上传失败：' + error.message);
+            }
+        }
+        
+        // 断点续传
+        async function resumableUpload() {
+            const uploadProgressBar = document.getElementById('uploadProgressBar');
+            const uploadStatus = document.getElementById('uploadStatus');
+            const form = document.getElementById('uploadForm');
+            
+            try {
+                for (let fileIndex = 0; fileIndex < currentFiles.length; fileIndex++) {
+                    const file = currentFiles[fileIndex];
+                    
+                    uploadStatus.textContent = `正在计算文件哈希... (${fileIndex + 1}/${currentFiles.length})`;
+                    const fileHash = await calculateFileHash(file);
+                    
+                    // 检查上传状态
+                    const statusResponse = await fetch('/check-upload-status/', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({fileHash: fileHash})
+                    });
+                    
+                    const statusData = await statusResponse.json();
+                    let uploadedChunks = statusData.exists ? statusData.uploaded_chunks : [];
+                    
+                    const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+                    
+                    if (uploadedChunks.length > 0) {
+                        uploadStatus.textContent = `检测到断点，从 ${uploadedChunks.length}/${totalChunks} 继续...`;
+                    }
+                    
+                    for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+                        // 跳过已上传的分片
+                        if (uploadedChunks.includes(chunkIndex)) {
+                            continue;
+                        }
+                        
+                        const start = chunkIndex * CHUNK_SIZE;
+                        const end = Math.min(start + CHUNK_SIZE, file.size);
+                        const chunk = file.slice(start, end);
+                        
+                        const formData = new FormData();
+                        formData.append('chunk', chunk);
+                        formData.append('filename', file.name);
+                        formData.append('chunkIndex', chunkIndex);
+                        formData.append('totalChunks', totalChunks);
+                        formData.append('fileHash', fileHash);
+                        
+                        const response = await fetch(form.action.replace('/upload/', '/upload-chunk/'), {
+                            method: 'POST',
+                            body: formData
+                        });
+                        
+                        if (!response.ok) {
+                            throw new Error('断点续传失败');
+                        }
+                        
+                        uploadedChunks.push(chunkIndex);
+                        const percentComplete = Math.round((uploadedChunks.length / totalChunks) * 100);
+                        uploadProgressBar.style.width = percentComplete + '%';
+                        uploadProgressBar.textContent = percentComplete + '%';
+                        uploadStatus.textContent = `正在上传... ${percentComplete}% (分片 ${uploadedChunks.length}/${totalChunks})`;
+                    }
+                }
+                
+                uploadProgressBar.classList.remove('progress-bar-animated');
+                uploadProgressBar.classList.add('bg-success');
+                uploadStatus.textContent = '上传完成！';
+                setTimeout(() => window.location.reload(), 500);
+            } catch (error) {
+                uploadFailed('断点续传失败：' + error.message);
+            }
+        }
+        
+        // 上传失败处理
+        function uploadFailed(message) {
+            const uploadProgressBar = document.getElementById('uploadProgressBar');
+            const uploadStatus = document.getElementById('uploadStatus');
+            const uploadBtn = document.getElementById('uploadBtn');
+            const fileInput = document.getElementById('fileInput');
+            
+            uploadProgressBar.classList.remove('progress-bar-animated');
+            uploadProgressBar.classList.add('bg-danger');
+            uploadStatus.textContent = message;
+            uploadBtn.disabled = false;
+            fileInput.disabled = false;
+        }
         
         // 格式化字节数
         function formatBytes(bytes) {
