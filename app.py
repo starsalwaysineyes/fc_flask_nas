@@ -22,6 +22,8 @@ from werkzeug.utils import secure_filename as werkzeug_secure_filename
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
+# 限制请求体最大大小为 1GB
+app.config['MAX_CONTENT_LENGTH'] = 1 * 1024 * 1024 * 1024
 
 # 配置根目录，默认为 /mnt/nas，可通过环境变量覆盖
 BASE_DIR = os.environ.get('BASE_DIR', '/mnt/nas')
@@ -35,6 +37,9 @@ if not os.path.exists(BASE_DIR):
 UPLOAD_TEMP_DIR = os.path.join(tempfile.gettempdir(), 'flask_nas_uploads')
 if not os.path.exists(UPLOAD_TEMP_DIR):
     os.makedirs(UPLOAD_TEMP_DIR, exist_ok=True)
+
+# 限制直传文件大小（200MB）
+MAX_DIRECT_UPLOAD_SIZE = 200 * 1024 * 1024
 
 
 def secure_filename(filename):
@@ -308,8 +313,8 @@ def download(filepath):
         if not os.path.exists(file_path) or not os.path.isfile(file_path):
             abort(404)
         
-        # 发送文件
-        return send_file(file_path, as_attachment=True, download_name=os.path.basename(file_path))
+        # 发送文件（启用 conditional=True 以支持多线程下载和断点续传）
+        return send_file(file_path, as_attachment=True, download_name=os.path.basename(file_path), conditional=True)
     
     except ValueError:
         abort(403)
@@ -346,6 +351,15 @@ def upload(subpath):
         uploaded_count = 0
         for file in files:
             if file and file.filename:
+                # 检查文件大小
+                file.seek(0, os.SEEK_END)
+                file_size = file.tell()
+                file.seek(0)
+                
+                if file_size > MAX_DIRECT_UPLOAD_SIZE:
+                    flash(f'文件 "{file.filename}" 超过了直传大小限制 (200MB)，请使用分片上传', 'danger')
+                    continue
+
                 # 使用 secure_filename 处理文件名
                 filename = secure_filename(file.filename)
                 if not filename:
@@ -487,8 +501,6 @@ def upload_chunk(subpath):
         filename = request.form.get('filename')
         chunk_index = int(request.form.get('chunkIndex', 0))
         total_chunks = int(request.form.get('totalChunks', 1))
-        file_hash = request.form.get('fileHash', '')
-        
         if not chunk or not filename:
             return jsonify({'success': False, 'error': '缺少必要参数'}), 400
         
@@ -496,9 +508,15 @@ def upload_chunk(subpath):
         safe_name = secure_filename(filename)
         if not safe_name:
             return jsonify({'success': False, 'error': '文件名无效'}), 400
-        
-        # 创建临时目录（使用文件哈希作为标识）
-        temp_dir = os.path.join(UPLOAD_TEMP_DIR, file_hash)
+            
+        # 安全处理哈希值（防止路径遍历）
+        file_hash = request.form.get('fileHash', '')
+        safe_hash = secure_filename(file_hash)
+        if not safe_hash:
+            return jsonify({'success': False, 'error': '无效的文件哈希'}), 400
+            
+        # 创建临时目录
+        temp_dir = os.path.join(UPLOAD_TEMP_DIR, safe_hash)
         os.makedirs(temp_dir, exist_ok=True)
         
         # 保存当前分片
@@ -538,13 +556,17 @@ def upload_chunk(subpath):
                     final_path = os.path.join(target_path, new_name)
                     counter += 1
             
-            # 合并所有分片
+            # 合并所有分片（使用流式读取，降低内存占用）
             with open(final_path, 'wb') as final_file:
                 for i in range(total_chunks):
                     chunk_file = os.path.join(temp_dir, f'chunk_{i}')
                     if os.path.exists(chunk_file):
                         with open(chunk_file, 'rb') as cf:
-                            final_file.write(cf.read())
+                            while True:
+                                data = cf.read(1024 * 1024)  # 每次读取 1MB
+                                if not data:
+                                    break
+                                final_file.write(data)
             
             # 清理临时文件
             try:
@@ -583,7 +605,9 @@ def check_upload_status():
         if not file_hash:
             return jsonify({'success': False, 'error': '缺少文件哈希'}), 400
         
-        temp_dir = os.path.join(UPLOAD_TEMP_DIR, file_hash)
+        # 安全处理哈希值
+        safe_hash = secure_filename(file_hash)
+        temp_dir = os.path.join(UPLOAD_TEMP_DIR, safe_hash)
         meta_path = os.path.join(temp_dir, 'meta.json')
         
         if not os.path.exists(meta_path):
@@ -640,6 +664,7 @@ if __name__ == '__main__':
     print(f"访问地址: http://{host}:{port}")
     if platform.system() == 'Windows':
         print(f"局域网访问: http://<本机IP>:{port}")
-    
-    app.run(host=host, port=port, debug=True)
+    # FC 环境中通常由环境变量控制或通过 gunicorn 启动
+    is_debug = os.environ.get('FLASK_DEBUG', 'false').lower() == 'true'
+    app.run(host=host, port=port, debug=is_debug)
 
